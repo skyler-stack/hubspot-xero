@@ -1,9 +1,38 @@
 export default async function handler(req, res) {
+  // ===== 第一步:查HubSpot,拿到最新的Closed Won deal =====
+  const hubspotToken = process.env.HUBSPOT_TOKEN;
+
+  const dealResponse = await fetch('https://api.hubapi.com/crm/v3/objects/deals/search', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${hubspotToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      filterGroups: [{
+        filters: [{ propertyName: 'dealstage', operator: 'EQ', value: 'closedwon' }]
+      }],
+      sorts: [{ propertyName: 'hs_lastmodifieddate', direction: 'DESCENDING' }],
+      properties: ['dealname', 'amount'],
+      limit: 1
+    })
+  });
+
+  const dealData = await dealResponse.json();
+  const deal = dealData.results?.[0];
+
+  if (!deal) {
+    return res.status(404).json({ error: 'No Closed Won deal found in HubSpot' });
+  }
+
+  const dealName = deal.properties.dealname || 'Unnamed Deal';
+  const dealAmount = parseFloat(deal.properties.amount) || 0;
+
+  // ===== 第二步:用refresh_token换Xero的access_token =====
   const clientId = process.env.XERO_CLIENT_ID;
   const clientSecret = process.env.XERO_CLIENT_SECRET;
   const refreshToken = process.env.XERO_REFRESH_TOKEN;
 
-  // 第一步:用refresh_token换新的access_token
   const tokenResponse = await fetch('https://identity.xero.com/connect/token', {
     method: 'POST',
     headers: {
@@ -20,14 +49,12 @@ export default async function handler(req, res) {
   const accessToken = tokenData.access_token;
 
   if (!accessToken) {
-    return res.status(500).json({ error: 'Failed to get access token', details: tokenData });
+    return res.status(500).json({ error: 'Failed to get Xero access token', details: tokenData });
   }
 
-  // 第二步:拿到Xero的tenant id(哪个公司账套)
+  // ===== 第三步:拿tenant id =====
   const connectionsResponse = await fetch('https://api.xero.com/connections', {
-    headers: {
-      'Authorization': `Bearer ${accessToken}`
-    }
+    headers: { 'Authorization': `Bearer ${accessToken}` }
   });
   const connections = await connectionsResponse.json();
   const tenantId = connections[0]?.tenantId;
@@ -36,7 +63,11 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'No Xero organisation connected', details: connections });
   }
 
-  // 第三步:创建一张测试发票(先用固定的测试数据,之后接入真实HubSpot deal数据)
+  // ===== 第四步:用deal的真实数据建发票 =====
+  const dueDate = new Date();
+  dueDate.setDate(dueDate.getDate() + 30);
+  const dueDateString = dueDate.toISOString().split('T')[0];
+
   const invoiceResponse = await fetch('https://api.xero.com/api.xro/2.0/Invoices', {
     method: 'POST',
     headers: {
@@ -48,21 +79,21 @@ export default async function handler(req, res) {
     body: JSON.stringify({
       Type: 'ACCREC',
       Contact: {
-        Name: 'Test Customer'
+        Name: dealName
       },
       LineItems: [
         {
-          Description: 'Test Invoice from HubSpot deal',
+          Description: `Invoice for deal: ${dealName}`,
           Quantity: 1,
-          UnitAmount: 100,
+          UnitAmount: dealAmount,
           AccountCode: '200'
         }
       ],
-      DueDate: '2026-09-12',
+      DueDate: dueDateString,
       Status: 'AUTHORISED'
     })
   });
 
   const invoiceData = await invoiceResponse.json();
-  res.status(200).json(invoiceData);
+  res.status(200).json({ dealUsed: { name: dealName, amount: dealAmount }, invoiceResult: invoiceData });
 }
