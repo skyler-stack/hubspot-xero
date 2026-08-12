@@ -58,6 +58,7 @@ export default async function handler(req, res) {
           AccountCode: '200'
         }
       ],
+      DueDate: '2026-09-12',
       Status: 'AUTHORISED'
     })
   });
