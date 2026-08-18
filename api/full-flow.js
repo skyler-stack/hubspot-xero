@@ -28,19 +28,22 @@ export default async function handler(req, res) {
   const dealName = deal.properties.dealname || 'Unnamed Deal';
   const dealAmount = parseFloat(deal.properties.amount) || 0;
 
-  // ===== 第二步:Xero拿access token =====
+  // ===== 第二步:Xero拿access token(refresh_token从Global Config读取,并自动更新) =====
   const clientId = process.env.XERO_CLIENT_ID;
   const clientSecret = process.env.XERO_CLIENT_SECRET;
+  const edgeConfigId = process.env.EDGE_CONFIG_ID;
+  const vercelApiToken = process.env.VERCEL_API_TOKEN;
 
-  // 从Global Config读取最新的refresh_token(不再用写死的环境变量)
-  const savedTokenResponse = await fetch(`${process.env.EDGE_CONFIG}`).catch(() => null);
-  let refreshToken = process.env.XERO_REFRESH_TOKEN; // 兜底,第一次用时还没存过
+  let refreshToken = process.env.XERO_REFRESH_TOKEN; // 兜底值
 
   try {
-    const configUrl = process.env.EDGE_CONFIG;
-    const getRes = await fetch(`https://edge-config.vercel.com/v1/config/get?key=xero_refresh_token`, {
-      headers: { 'Authorization': `Bearer ${process.env.VERCEL_API_TOKEN}` }
+    const readRes = await fetch(`https://api.vercel.com/v1/edge-config/${edgeConfigId}/item/xero_refresh_token`, {
+      headers: { 'Authorization': `Bearer ${vercelApiToken}` }
     });
+    if (readRes.ok) {
+      const readData = await readRes.json();
+      if (readData.value) refreshToken = readData.value;
+    }
   } catch (e) {}
 
   const tokenResponse = await fetch('https://identity.xero.com/connect/token', {
@@ -61,6 +64,22 @@ export default async function handler(req, res) {
 
   if (!accessToken) {
     return res.status(500).json({ step: 'xero_auth', error: 'Failed to get Xero access token', details: tokenData });
+  }
+
+  // 把新的refresh_token写回Global Config,供下次使用
+  if (newRefreshToken) {
+    try {
+      await fetch(`https://api.vercel.com/v1/edge-config/${edgeConfigId}/items`, {
+        method: 'PATCH',
+        headers: {
+          'Authorization': `Bearer ${vercelApiToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          items: [{ operation: 'upsert', key: 'xero_refresh_token', value: newRefreshToken }]
+        })
+      });
+    } catch (e) {}
   }
 
   const connectionsResponse = await fetch('https://api.xero.com/connections', {
