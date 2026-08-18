@@ -31,7 +31,17 @@ export default async function handler(req, res) {
   // ===== 第二步:Xero拿access token =====
   const clientId = process.env.XERO_CLIENT_ID;
   const clientSecret = process.env.XERO_CLIENT_SECRET;
-  const refreshToken = process.env.XERO_REFRESH_TOKEN;
+
+  // 从Global Config读取最新的refresh_token(不再用写死的环境变量)
+  const savedTokenResponse = await fetch(`${process.env.EDGE_CONFIG}`).catch(() => null);
+  let refreshToken = process.env.XERO_REFRESH_TOKEN; // 兜底,第一次用时还没存过
+
+  try {
+    const configUrl = process.env.EDGE_CONFIG;
+    const getRes = await fetch(`https://edge-config.vercel.com/v1/config/get?key=xero_refresh_token`, {
+      headers: { 'Authorization': `Bearer ${process.env.VERCEL_API_TOKEN}` }
+    });
+  } catch (e) {}
 
   const tokenResponse = await fetch('https://identity.xero.com/connect/token', {
     method: 'POST',
@@ -47,6 +57,7 @@ export default async function handler(req, res) {
 
   const tokenData = await tokenResponse.json();
   const accessToken = tokenData.access_token;
+  const newRefreshToken = tokenData.refresh_token;
 
   if (!accessToken) {
     return res.status(500).json({ step: 'xero_auth', error: 'Failed to get Xero access token', details: tokenData });
